@@ -1,61 +1,63 @@
-use std::{net::SocketAddr, time::Duration};
+use std::ops::Range;
 
-use axum::{Router, routing::{get, post}, extract::Path};
-use tokio::time::sleep;
-
-use crate::db::{Keyspaces, graceful_shutdown};
+use actix_web::{web, Responder, get, HttpServer, App, post, HttpRequest};
+use scylla::Session;
 
 mod db;
 mod config;
 mod notify;
 
-#[tokio::main]
-async fn main() {
-    let app = Router::new()
-        .route("/fetch", get(fetch))
-        .route("/fetch/:keyspace", get(fetch_from_keyspace))
-        .route("/fetch/:keyspace/:num", get(fetch_n_from_keyspace))
-        .route("/add", post(add))
-        .route("/add/:keyspace", post(add_to_keyspace))
-        .route("/rem", post(invalidate))
-        .route("/rem/:keyspace", post(invalidate_at_keyspace));
 
+#[actix_web::main] // or #[tokio::main]
+async fn main() -> std::io::Result<()> {
+    HttpServer::new(|| {
+        App::new().service(greet)
+    })
+    .bind(("127.0.0.1", 8080))?
+    .run()
+    .await
+}
+//REVIEW - server address
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+static SESSION: Option<Session> = None; 
+
+#[get("/hello/{name}")]
+async fn greet(name: web::Path<String>) -> impl Responder {
+    format!("Hello {name}!")
+}
+
+#[get("/fetch/{email_type}/{range}")]
+async fn fetch(path: web::Path<(Option<String>, Option<Range<usize>>)>) -> impl Responder {
+    let (email_type, range) = path.into_inner();
+    let (email_type, range, session) = (email_type.unwrap_or("email".to_string()), range.unwrap_or(0..10), SESSION.as_ref().unwrap());
+    db::fetch(&session, email_type, range).await.unwrap();
+    ""
+}
+
+#[post("/add/{email_type}")]
+async fn add(path: web::Path<Option<String>>, body: web::Json<Vec<db::Combo>>, req: HttpRequest) -> impl Responder {
+    let email_type = path.into_inner().unwrap_or("email".to_string());
+    let session = SESSION.as_ref().unwrap();
+    let params = req.headers()
+    .iter()
+    .filter(|header| header.0.as_str().starts_with("p-"))
+    .map(|header| {
+        format!("{}|{}\n", &header.0.as_str()[2..], header.1.to_str().unwrap())
+    })
+    .reduce(|a, b| a + &b)
+    .unwrap_or_default()
+    .to_lowercase();
+    db::add(session, email_type, body.0, params).await.unwrap();
     
-    println!("Starting server");
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .with_graceful_shutdown(async {
-            sleep(Duration::from_secs(10)).await;
-        })
-        .await
-        .unwrap();
-
-    println!("Gracefully shutting down");
-    // graceful_shutdown().await;
+    ""
 }
 
-// static SESSION = 
+#[post("/rem/{email_type}")]
+async fn rem(path: web::Path<Option<String>>, body: web::Json<Vec<String>>) -> impl Responder {
+    let email_type = path.into_inner().unwrap_or("email".to_string());
+    let session = SESSION.as_ref().unwrap();
 
-fn get_keyspace(keyspace: Option<&&str>) -> Keyspaces {
-    match keyspace {
-        Some(&"discord") => Keyspaces::Discord,
-        Some(&"valid") => Keyspaces::Valid,
-        _ => Keyspaces::Email,
-    }
+    db::invalidate(session, email_type, body.0).await.unwrap();
+    ""
 }
 
-async fn fetch() {}
-
-async fn fetch_from_keyspace(Path(keyspace): Path<String>) {}
-
-async fn fetch_n_from_keyspace(Path((keyspace, num)): Path<(String, u16)>) {}
-
-async fn add() {}
-
-async fn add_to_keyspace(Path(keyspace): Path<String>,) {}
-
-async fn invalidate() {}
-
-async fn invalidate_at_keyspace(Path(keyspace): Path<String>,) {}

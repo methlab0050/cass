@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use crate::config::{TELEGRAMCHATID, TELEGRAMTOKEN, DISCORDWEBHOOK};
 
 
-pub async fn notify(combo_id: &str, _account_info: &Value) {
+pub async fn notify(combo_id: &str, account_info: &Value) {
     if TELEGRAMTOKEN == None && TELEGRAMCHATID == None && DISCORDWEBHOOK == None {
         return
     }
@@ -12,7 +12,7 @@ pub async fn notify(combo_id: &str, _account_info: &Value) {
 
     let mut desc = String::new();
 
-    let Some(account_info) = _account_info.as_object() else { return; };
+    let Some(account_info) = account_info.as_object() else { return; };
 
     for (k, v) in account_info {
         let v = v.to_owned();
@@ -30,7 +30,8 @@ pub async fn notify(combo_id: &str, _account_info: &Value) {
             }))
             .send()
             .await
-            .map(|resp| println!("Discord webhook response: {}", resp.status()));
+            .map(|resp| println!("Discord webhook response: {}", resp.status()))
+            .err();
     }
 
     match (TELEGRAMCHATID, TELEGRAMTOKEN) {
@@ -42,7 +43,8 @@ pub async fn notify(combo_id: &str, _account_info: &Value) {
                 }))
                 .send()
                 .await
-                .map(|resp| println!("Telegram response: {}", resp.status()));
+                .map(|resp| println!("Telegram response: {}", resp.status()))
+                .err();
         },
         (_, _) => {}
     }
