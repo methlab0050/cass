@@ -1,9 +1,10 @@
-use std::ops::Range;
+use std::{ops::Range, ffi::OsStr, fmt::Display};
 
 // use axum::http::status::StatusCode;
 use scylla::{Session, SessionConfig, transport::errors::{NewSessionError, QueryError, BadQuery}, batch::Batch, query::Query, prepared_statement::PreparedStatement, SessionBuilder};
 use futures::stream::StreamExt;
 use serde::Deserialize;
+use uuid::Uuid;
 
 //ANCHOR - Important
 #[derive(Deserialize)]
@@ -23,6 +24,8 @@ pub async fn init() -> Result<Session, NewSessionError> {
         .build()
         .await?;
 
+    init_keyspace(&session, "emails").await?;
+
     for keyspace in ["".to_string()] {
         init_keyspace(&session, keyspace).await?;
     }
@@ -33,7 +36,17 @@ pub async fn init() -> Result<Session, NewSessionError> {
 
 static mut TABLE_INIT_STMT: Option<(PreparedStatement, PreparedStatement)> = None;
 
-pub async fn init_keyspace(session: &Session, email_type: String) -> QueryResult<()> {
+pub async fn init_keyspace<S>(session: &Session, email_type: S) -> QueryResult<()> 
+where 
+    String: From<S>, 
+    S: Display 
+{
+    let create_keyspace = Query::new(format!("CREATE  KEYSPACE IF NOT EXISTS {email_type} 
+    WITH REPLICATION = {{ 
+        'class' : 'SimpleStrategy', 
+        'replication_factor' : 1 
+    }}"));
+    session.query(create_keyspace, []).await?;
     session.use_keyspace(email_type, false).await?;
     match unsafe { &TABLE_INIT_STMT } {
         Some((main, used)) => {
@@ -98,7 +111,6 @@ pub async fn add(session: &Session, email_type: String, emails: Vec<Combo>, para
 
     if unsafe { INSERT_STMT.is_none() } {
         let stmt = session.prepare("INSERT INTO main (email, passw, lastcheck, p, id) VALUES (?, ?, 0, ?, ?)").await.unwrap();
-        // TODO - test if cqlsh will auto produce ids
         unsafe { INSERT_STMT = Some(stmt) };
     }
 
@@ -107,16 +119,18 @@ pub async fn add(session: &Session, email_type: String, emails: Vec<Combo>, para
             batch.append_statement(stmt.clone());
         }
     
-        session.batch(&batch, sanitize(emails)).await?;
+        session.batch(&batch, convert_to_tuple(emails, params)).await?;
     }
 
     Ok(())
 }
 
-fn sanitize(emails: Vec<Combo>) -> &'static [(String, &'static str, &'static str, &'static str)] {
-    // (email, passw, lastcheck, p, id)
-    todo!()
-    // TODO
+fn convert_to_tuple(emails: Vec<Combo>, param: String) -> Vec<(String, String, String, String)> {
+    emails.into_iter()
+        .map(|combo| {
+            (combo.email, combo.password, param.clone(), Uuid::new_v4().to_string())
+        })
+        .collect::<Vec<_>>()
 }
 
 pub async fn invalidate(session: &Session, email_type: String, combo_ids: Vec<String>) -> QueryResult<()> {
