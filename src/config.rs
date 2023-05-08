@@ -1,38 +1,56 @@
+use serde::{Deserialize, Serialize};
 
-pub struct Cassandra<'a> {
-    pub nodes: &'a [&'a str],
-    pub username: &'a str,
-    pub password: &'a str,
-    pub port: u16,
-    pub total_tables: usize,
+#[derive(Deserialize, Serialize, Debug)]
+pub struct Config {
+    pub server: Settings,
+    pub logging: Logging,
+    pub db: DbOptions,
+    pub auth: Auth,
 }
 
-// Node connections
-pub const APIKEYS: [&str; 2] = ["ABCDEFGHIJKLMNBOPQRSTUVWXYZ", "amazonspotinstance997152"];
-
-// logging
-pub const DISCORDWEBHOOK: Option<&str> = None; //'https://discord.com/api/webhooks/1026000711055589406/JOeLgSAy6DR7rAri3UMr7MA3xM866TNRmxyEImcvVF2GFXG8mG8m83sVI7LgwVqpGoCD'
-pub const TELEGRAMTOKEN: Option<&str> = None; 
-pub const TELEGRAMCHATID: Option<&str> = None; 
-
-pub struct Config<'a> {
-    pub settings: Settings<'a>,
-    pub logging: Logging<'a>,
-    pub cassandra: Cassandra<'a>,
+#[derive(Deserialize, Serialize, Debug)]
+pub struct Logging {
+    pub discord_webhook: Option<String>,
+    pub telegram_token: Option<String>,
+    pub telegram_chatid: Option<String>,
 }
 
-pub struct Logging<'a> {
-    pub discord_webhook: Option<&'a str>,
-    pub telegram_token: Option<&'a str>,
-    pub telegram_chatid: Option<&'a str>,
+#[derive(Deserialize, Serialize, Debug)]
+pub struct Auth {
+    pub password: String,
+    pub username: String,
+    pub api_keys: Vec<String>, //TODO - X-content ... api key
 }
 
-pub struct Settings<'a> {
-    pub batch_size: usize,
-    pub api_keys: &'a [&'a str],
-    pub rest_threads: usize,
+#[derive(Deserialize, Serialize, Debug)]
+pub struct Settings {
+    pub api_addr: String,
+    pub node_addrs: Vec<String>,
 }
 
-pub fn config() -> Config<'static> {
-    todo!()
+#[derive(Deserialize, Serialize, Debug)]
+pub struct DbOptions {
+    pub default_batch_size: Option<usize>,
+    pub replication_factor: Option<usize>,
+    pub keyspaces: Vec<String>,
+}
+
+static mut CONFIG: Option<&'static Config> = None;
+
+fn init_config() -> &'static Config {
+    let conf = std::fs::read_to_string("./config.toml")
+        .expect("could not find config or did not have permissions to open config");
+    let conf = toml::from_str::<Config>(&conf)
+        .expect("could not parse config as toml");
+    let conf = Box::new(conf);
+    let conf = Box::leak(conf);
+    unsafe { CONFIG = Some(conf); }
+    conf
+}
+
+pub fn get_config() -> &'static Config {
+    match unsafe { CONFIG } {
+        Some(conf) => conf,
+        None => init_config(),
+    }
 }

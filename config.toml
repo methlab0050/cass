@@ -1,0 +1,28 @@
+
+[auth]
+password = ""
+username = ""
+api_keys = []
+
+[db]
+default_batch_size = 0
+replication_factor = 0
+
+[server]
+# host address
+# Example:
+# api_addr = "127.0.0.1:8080"
+api_addr = ""
+
+# node addresses
+# Example: 
+# node_addrs = ["127.0.0.1:9042", "db1.example.com"]
+node_addrs = []
+
+# keyspaces for other type of emails
+keyspaces = []
+
+[logging]
+discord_webhook = ""
+telegram_token = ""
+telegram_chatid = ""

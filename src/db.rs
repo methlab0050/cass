@@ -1,12 +1,12 @@
-use std::{ops::Range, ffi::OsStr, fmt::Display};
+use std::ops::Range;
 
-// use axum::http::status::StatusCode;
-use scylla::{Session, SessionConfig, transport::errors::{NewSessionError, QueryError, BadQuery}, batch::Batch, query::Query, prepared_statement::PreparedStatement, SessionBuilder};
+use scylla::{Session, transport::errors::{NewSessionError, QueryError, BadQuery}, batch::Batch, query::Query, prepared_statement::PreparedStatement, SessionBuilder};
 use futures::stream::StreamExt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-//ANCHOR - Important
+use crate::config::get_config;
+
 #[derive(Deserialize)]
 pub struct Combo {
     pub email: String,
@@ -16,35 +16,30 @@ pub struct Combo {
 type QueryResult<T> = Result<T, QueryError>;
 
 pub async fn init() -> Result<Session, NewSessionError> {
+    let config = get_config();
     let session = SessionBuilder::new()
-        // .known_nodes(&[])
-        // .user(username, passwd)
-        // .pool_size(size)
-        // .ssl_context(ssl_context)
+        .known_nodes(&config.server.node_addrs)
+        .user(&config.auth.username, &config.auth.password)
         .build()
         .await?;
 
     init_keyspace(&session, "emails").await?;
 
-    for keyspace in ["".to_string()] {
+    for keyspace in &config.db.keyspaces {
         init_keyspace(&session, keyspace).await?;
     }
 
     Ok(session)
 }
-// REVIEW - config nodes and keyspaces
 
 static mut TABLE_INIT_STMT: Option<(PreparedStatement, PreparedStatement)> = None;
 
-pub async fn init_keyspace<S>(session: &Session, email_type: S) -> QueryResult<()> 
-where 
-    String: From<S>, 
-    S: Display 
-{
+pub async fn init_keyspace(session: &Session, email_type: &str) -> QueryResult<()> {
+    let replication_factor = get_config().db.replication_factor.unwrap();
     let create_keyspace = Query::new(format!("CREATE  KEYSPACE IF NOT EXISTS {email_type} 
     WITH REPLICATION = {{ 
         'class' : 'SimpleStrategy', 
-        'replication_factor' : 1 
+        'replication_factor' : {replication_factor} 
     }}"));
     session.query(create_keyspace, []).await?;
     session.use_keyspace(email_type, false).await?;
@@ -60,7 +55,7 @@ where
                 passw text, 
                 lastcheck timestamp, 
                 p text
-            ) WITH REPLICATION = {{ 'class' : 'SimpleStrategy', 'replication_factor' : 1 }}");
+            ) WITH REPLICATION = {{ 'class' : 'SimpleStrategy', 'replication_factor' : {replication_factor} }}");
             let used = session.prepare(query("used")).await?;
             let main = session.prepare(query("main")).await?;
             session.execute(&main, []).await?;
@@ -72,8 +67,8 @@ where
 }
 
 static mut FETCH_STMT: Option<PreparedStatement> = None;
-
-pub async fn fetch(session: &Session, email_type: String, range: Range<usize>) -> Result<Vec<(String, String, String, String, String)>, QueryError> {
+// TODO convert back to tuple
+pub async fn fetch(session: &Session, email_type: String, range: Range<usize>) -> QueryResult<Vec<(String, String, String, String, String)>> {
     session.use_keyspace(email_type, false).await?;
     if unsafe { FETCH_STMT.is_none() } {
         let stmt = session.prepare("SELECT * FROM main").await?;
@@ -149,3 +144,9 @@ pub async fn invalidate(session: &Session, email_type: String, combo_ids: Vec<St
     Ok(())
 }
 
+pub fn to_json<'a, T: Deserialize<'a> + Serialize>(res: QueryResult<T>) -> std::string::String {
+    match res {
+        Ok(value) => serde_json::to_string(&value).unwrap_or("\"could not return expected value\"".to_owned()),
+        Err(err) => format!("\"{err}\"")
+    }
+}

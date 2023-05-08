@@ -1,4 +1,5 @@
-
+# WARNING
+Api-key authentication and formatting for fetch responses has not been set as of yet. If you plan to use these features, beware of possible setbacks.
 
 
 ## Routes

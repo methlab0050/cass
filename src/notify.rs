@@ -1,10 +1,11 @@
 use serde_json::{json, Value};
 
-use crate::config::{TELEGRAMCHATID, TELEGRAMTOKEN, DISCORDWEBHOOK};
+use crate::config::get_config;
 
 
-pub async fn notify(combo_id: &str, account_info: &Value) {
-    if TELEGRAMTOKEN == None && TELEGRAMCHATID == None && DISCORDWEBHOOK == None {
+pub async fn _notify(combo_id: &str, account_info: &Value) {
+    let config = &get_config().logging;
+    if config.telegram_token == None && config.telegram_chatid == None && config.discord_webhook == None {
         return
     }
     
@@ -19,7 +20,7 @@ pub async fn notify(combo_id: &str, account_info: &Value) {
         desc += &format!("**{}:** {}\n", k.replace("-", " ").replace("_", " "), v);
     }
 
-    if let Some(disc_webhook) = DISCORDWEBHOOK {
+    if let Some(disc_webhook) = &config.discord_webhook {
         client.post(disc_webhook)
             .json(&json!({
                 "embeds": [{
@@ -34,7 +35,7 @@ pub async fn notify(combo_id: &str, account_info: &Value) {
             .err();
     }
 
-    match (TELEGRAMCHATID, TELEGRAMTOKEN) {
+    match (&config.telegram_chatid, &config.telegram_token) {
         (Some(chat_id), Some(token)) => {
             client.post(format!("https://api.telegram.org/bot{}/sendMessage", token))
                 .json(&json!({
