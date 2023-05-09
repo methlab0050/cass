@@ -1,8 +1,9 @@
-use std::ops::Range;
+use std::{ops::Range, collections::HashMap};
 
-use scylla::{Session, transport::errors::{NewSessionError, QueryError, BadQuery}, batch::Batch, query::Query, prepared_statement::PreparedStatement, SessionBuilder};
+use scylla::{Session, transport::errors::{NewSessionError, QueryError, BadQuery}, batch::Batch, query::Query, prepared_statement::PreparedStatement, SessionBuilder, _macro_internal::CqlValue};
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::config::get_config;
@@ -68,22 +69,41 @@ pub async fn init_keyspace(session: &Session, email_type: &str) -> QueryResult<(
 
 static mut FETCH_STMT: Option<PreparedStatement> = None;
 // TODO convert back to tuple
-pub async fn fetch(session: &Session, email_type: String, range: Range<usize>) -> QueryResult<Vec<(String, String, String, String, String)>> {
+pub async fn fetch(session: &Session, email_type: String, range: Range<usize>) -> QueryResult<String> {
     session.use_keyspace(email_type, false).await?;
     if unsafe { FETCH_STMT.is_none() } {
         let stmt = session.prepare("SELECT * FROM main").await?;
         unsafe { FETCH_STMT = Some(stmt) };
     }
 
-    let rows = if let Some(stmt) = unsafe { &FETCH_STMT } {
-        session.execute_iter(stmt.clone(), &[])
-            .await?
-            .into_typed::<(String, String, String, String, String)>()
-            .skip(range.start)
+    let resp = if let Some(stmt) = unsafe { &FETCH_STMT } {
+        let rows = session.execute_iter(stmt.clone(), &[])
+            .await?;
+        let column_names = rows
+            .get_column_specs()
+            .iter()
+            .enumerate()
+            .map(|(index, column_spec)| (index, column_spec.name.clone()))
+            .collect::<HashMap<_, _>>();
+        let json_response = rows.skip(range.start)
             .take(range.end - range.start)
-            .filter_map(|x| async { x.ok() })
+            .filter_map(|c|async{ c.ok() })
+            .map(|row|
+                row.columns.into_iter()
+                    .filter_map(|c| c)
+                    .enumerate()
+                    .filter_map(|(index, value)| {
+                        Some((column_names.get(&index)?.to_string(), Value::String( match value {
+                            CqlValue::Timestamp(lastcheck)=>lastcheck.to_string(),
+                            CqlValue::Text(text)=>text.to_string(),
+                            _ => panic!("Not expected in schema")
+                        })))
+                    })
+                    .collect::<serde_json::map::Map<_, _>>()
+            )
             .collect::<Vec<_>>()
-            .await
+            .await;
+        serde_json::to_string(&json_response).unwrap_or("\"could not return expected value\"".to_owned())
     } else {
         return Err(
             QueryError::BadQuery(
@@ -94,7 +114,7 @@ pub async fn fetch(session: &Session, email_type: String, range: Range<usize>) -
         )
     };
 
-    Ok(rows)
+    Ok(resp)
 }
 
 static mut INSERT_STMT: Option<PreparedStatement> = None;
@@ -148,5 +168,21 @@ pub fn to_json<'a, T: Deserialize<'a> + Serialize>(res: QueryResult<T>) -> std::
     match res {
         Ok(value) => serde_json::to_string(&value).unwrap_or("\"could not return expected value\"".to_owned()),
         Err(err) => format!("\"{err}\"")
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn streams() {
+        let r = futures::stream::iter(0..10)
+            .skip(5)
+            .take(2)
+            .collect::<Vec<_>>()
+            .await;
+        dbg!(r);
     }
 }
