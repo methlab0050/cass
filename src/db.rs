@@ -83,7 +83,7 @@ pub async fn fetch(session: &Session, email_type: String, range: Range<usize>) -
         .unwrap_or(1000)
         .min(range.end - range.start);
 
-    session.use_keyspace(email_type, false).await?;
+    session.use_keyspace(email_type.clone(), false).await?;
     
     if unsafe { FETCH_STMT.is_none() } {
         let stmt = session.prepare("SELECT * FROM main").await?;
@@ -112,12 +112,15 @@ pub async fn fetch(session: &Session, email_type: String, range: Range<usize>) -
         .await
         .into_iter();
 
-    let mut json_resp = vec![];
+    let mut json_resp = Vec::new();
+
+    let mut invalid_ids = Vec::new();
 
     while let Some(Ok(row)) = rows.next() {
         let mut columns = row.columns.into_iter().enumerate();
 
         let mut table = Map::new(); 
+
         
         while let Some((index, Some(value))) = columns.next() {
         
@@ -129,11 +132,17 @@ pub async fn fetch(session: &Session, email_type: String, range: Range<usize>) -
                 _ => panic!("Not expected in schema")
             };
 
+            if column_name == "id".to_owned() {
+                invalid_ids.push(value.clone());
+            }
+
             table.insert(column_name, Value::String(value));
         }
 
         json_resp.push(table);
     }
+
+    invalidate(session, email_type, invalid_ids).await.err();
 
     let resp = serde_json::to_string(&json_resp)
         .unwrap_or("\"could not return expected value\"".to_owned());
