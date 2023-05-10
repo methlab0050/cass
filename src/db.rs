@@ -1,9 +1,9 @@
-use std::{ops::Range, collections::HashMap};
+use std::ops::Range;
 
-use scylla::{Session, transport::errors::{NewSessionError, QueryError, BadQuery}, batch::Batch, query::Query, prepared_statement::PreparedStatement, SessionBuilder, _macro_internal::CqlValue};
+use scylla::{Session, transport::errors::{NewSessionError, QueryError, BadQuery}, batch::Batch, query::Query, prepared_statement::PreparedStatement, SessionBuilder, _macro_internal::CqlValue::{Timestamp, Text}};
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, Map};
 use uuid::Uuid;
 
 use crate::config::get_config;
@@ -24,10 +24,18 @@ pub async fn init() -> Result<Session, NewSessionError> {
         .build()
         .await?;
 
-    init_keyspace(&session, "emails").await?;
+    init_keyspace(&session, "emails").await
+        .expect("Could not initalize default keyspace, \"emails\"");
 
     for keyspace in &config.db.keyspaces {
-        init_keyspace(&session, keyspace).await?;
+        match init_keyspace(&session, keyspace).await {
+            Ok(_) => {
+                println!("Keyspace for {:?} initalized", keyspace)
+            }
+            Err(err) => {
+                eprintln!("Could not initialize keyspace for {keyspace:?}\n    {err}")
+            }
+        };
     }
 
     Ok(session)
@@ -37,11 +45,11 @@ static mut TABLE_INIT_STMT: Option<(PreparedStatement, PreparedStatement)> = Non
 
 pub async fn init_keyspace(session: &Session, email_type: &str) -> QueryResult<()> {
     let replication_factor = get_config().db.replication_factor.unwrap();
-    let create_keyspace = Query::new(format!("CREATE  KEYSPACE IF NOT EXISTS {email_type} 
+    let create_keyspace = Query::new(format!("CREATE  KEYSPACE IF NOT EXISTS {} 
     WITH REPLICATION = {{ 
         'class' : 'SimpleStrategy', 
-        'replication_factor' : {replication_factor} 
-    }}"));
+        'replication_factor' : {}
+    }}", email_type, replication_factor));
     session.query(create_keyspace, []).await?;
     session.use_keyspace(email_type, false).await?;
     match unsafe { &TABLE_INIT_STMT } {
@@ -56,7 +64,7 @@ pub async fn init_keyspace(session: &Session, email_type: &str) -> QueryResult<(
                 passw text, 
                 lastcheck timestamp, 
                 p text
-            ) WITH REPLICATION = {{ 'class' : 'SimpleStrategy', 'replication_factor' : {replication_factor} }}");
+            )");
             let used = session.prepare(query("used")).await?;
             let main = session.prepare(query("main")).await?;
             session.execute(&main, []).await?;
@@ -68,51 +76,67 @@ pub async fn init_keyspace(session: &Session, email_type: &str) -> QueryResult<(
 }
 
 static mut FETCH_STMT: Option<PreparedStatement> = None;
-// TODO convert back to tuple
+
 pub async fn fetch(session: &Session, email_type: String, range: Range<usize>) -> QueryResult<String> {
+    let batch_size = get_config().db
+        .max_batch_size
+        .unwrap_or(1000)
+        .min(range.end - range.start);
+
     session.use_keyspace(email_type, false).await?;
+    
     if unsafe { FETCH_STMT.is_none() } {
         let stmt = session.prepare("SELECT * FROM main").await?;
         unsafe { FETCH_STMT = Some(stmt) };
     }
 
-    let resp = if let Some(stmt) = unsafe { &FETCH_STMT } {
-        let rows = session.execute_iter(stmt.clone(), &[])
-            .await?;
-        let column_names = rows
-            .get_column_specs()
-            .iter()
-            .enumerate()
-            .map(|(index, column_spec)| (index, column_spec.name.clone()))
-            .collect::<HashMap<_, _>>();
-        let json_response = rows.skip(range.start)
-            .take(range.end - range.start)
-            .filter_map(|c|async{ c.ok() })
-            .map(|row|
-                row.columns.into_iter()
-                    .filter_map(|c| c)
-                    .enumerate()
-                    .filter_map(|(index, value)| {
-                        Some((column_names.get(&index)?.to_string(), Value::String( match value {
-                            CqlValue::Timestamp(lastcheck)=>lastcheck.to_string(),
-                            CqlValue::Text(text)=>text.to_string(),
-                            _ => panic!("Not expected in schema")
-                        })))
-                    })
-                    .collect::<serde_json::map::Map<_, _>>()
-            )
-            .collect::<Vec<_>>()
-            .await;
-        serde_json::to_string(&json_response).unwrap_or("\"could not return expected value\"".to_owned())
-    } else {
-        return Err(
+    let stmt = unsafe { 
+        FETCH_STMT.as_ref().ok_or(
             QueryError::BadQuery(
                 BadQuery::Other(
                     "Failed to cache prepared statement".to_owned()
                 )
             )
-        )
+        )? 
     };
+
+    let rows = session.execute_iter(stmt.clone(), &[])
+        .await?;
+    let column_names = rows.get_column_specs()
+        .iter()
+        .map(|column_spec| column_spec.name.clone())
+        .collect::<Vec<_>>();
+    let mut rows = rows.skip(range.start)
+        .take(batch_size)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter();
+
+    let mut json_resp = vec![];
+
+    while let Some(Ok(row)) = rows.next() {
+        let mut columns = row.columns.into_iter().enumerate();
+
+        let mut table = Map::new(); 
+        
+        while let Some((index, Some(value))) = columns.next() {
+        
+            let column_name = column_names[index].to_owned();
+
+            let value = match value {
+                Timestamp(lastcheck)=>lastcheck.to_string(),
+                Text(text)=>text.to_string(),
+                _ => panic!("Not expected in schema")
+            };
+
+            table.insert(column_name, Value::String(value));
+        }
+
+        json_resp.push(table);
+    }
+
+    let resp = serde_json::to_string(&json_resp)
+        .unwrap_or("\"could not return expected value\"".to_owned());
 
     Ok(resp)
 }
@@ -125,7 +149,8 @@ pub async fn add(session: &Session, email_type: String, emails: Vec<Combo>, para
     let mut batch = Batch::default();
 
     if unsafe { INSERT_STMT.is_none() } {
-        let stmt = session.prepare("INSERT INTO main (email, passw, lastcheck, p, id) VALUES (?, ?, 0, ?, ?)").await.unwrap();
+        let stmt = "INSERT INTO main (email, passw, lastcheck, p, id) VALUES (?, ?, 0, ?, ?)";
+        let stmt = session.prepare(stmt).await?;
         unsafe { INSERT_STMT = Some(stmt) };
     }
 
@@ -168,21 +193,5 @@ pub fn to_json<'a, T: Deserialize<'a> + Serialize>(res: QueryResult<T>) -> std::
     match res {
         Ok(value) => serde_json::to_string(&value).unwrap_or("\"could not return expected value\"".to_owned()),
         Err(err) => format!("\"{err}\"")
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn streams() {
-        let r = futures::stream::iter(0..10)
-            .skip(5)
-            .take(2)
-            .collect::<Vec<_>>()
-            .await;
-        dbg!(r);
     }
 }

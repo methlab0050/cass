@@ -30,6 +30,7 @@ pub struct Settings {
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct DbOptions {
+    pub max_batch_size: Option<usize>,
     pub default_batch_size: Option<usize>,
     pub replication_factor: Option<usize>,
     pub keyspaces: Vec<String>,
@@ -40,9 +41,14 @@ static mut CONFIG: Option<&'static Config> = None;
 fn init_config() -> &'static Config {
     let conf = std::fs::read_to_string("./config.toml")
         .expect("could not find config or did not have permissions to open config");
-    let conf = toml::from_str::<Config>(&conf)
-        .expect("could not parse config as toml");
-    let conf = Box::new(conf);
+    let conf = match toml::from_str::<Config>(&conf) {
+        Ok(conf) => {
+            Box::new(conf)
+        },
+        Err(err) => {
+            panic!("Could not parse config.toml for use in database\n   {err}")
+        },
+    };
     let conf = Box::leak(conf);
     unsafe { CONFIG = Some(conf); }
     conf
