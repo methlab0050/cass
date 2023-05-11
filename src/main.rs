@@ -29,7 +29,10 @@ async fn main() -> std::io::Result<()> {
 }
 
 fn auth(req: &HttpRequest) -> bool {
-    let Some(auth_header) = req.headers().get("auth") else { return false; };
+    let get_header = |header_key| req.headers().get(header_key);
+    let Some(auth_header) = get_header("auth")
+        .or(get_header("authentication")) 
+        else { return false; };
     let Ok(auth_header) = auth_header.to_str() else { return false; };
     get_config().auth.api_keys.contains(&auth_header.to_owned())
 }
@@ -59,7 +62,7 @@ async fn fetch(path: Path<(Option<String>, Option<Range<usize>>)>, req: HttpRequ
 }
 
 #[post("/add/{email_type}")]
-async fn add(path: Path<Option<String>>, body: Json<Vec<db::Combo>>, req: HttpRequest) -> impl Responder {
+async fn add(path: Path<Option<String>>, body: Json<Vec<String>>, req: HttpRequest) -> impl Responder {
     if auth(&req) == false {
         return "\"not authenticated\"".to_owned();
     }
@@ -67,6 +70,22 @@ async fn add(path: Path<Option<String>>, body: Json<Vec<db::Combo>>, req: HttpRe
     let session = unsafe {
         SESSION.as_ref().expect("uninitialized session")
     };
+    let body = body.0
+        .into_iter()
+        .filter_map(|email_n_passw| {
+            let email_n_passw = email_n_passw.split(":")
+                .collect::<Vec<&str>>();
+            let email = match email_n_passw.get(0) {
+                Some(str) => (*str).to_owned(),
+                None => return None,
+            };
+            let password = match email_n_passw.get(1) {
+                Some(str) => (*str).to_owned(),
+                None => return None,
+            };
+            Some(db::Combo{ email, password })
+        })
+        .collect();
     let params = req.headers()
         .iter()
         .filter(|header| header.0.as_str().starts_with("p-"))
@@ -76,7 +95,7 @@ async fn add(path: Path<Option<String>>, body: Json<Vec<db::Combo>>, req: HttpRe
         .reduce(|a, b| a + &b)
         .unwrap_or_default()
         .to_lowercase();
-    let db_resp = db::add(session, email_type, body.0, params).await;
+    let db_resp = db::add(session, email_type, body, params).await;
     db::to_json(db_resp)
 }
 
