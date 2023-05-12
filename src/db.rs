@@ -152,14 +152,16 @@ pub async fn fetch(session: &Session, email_type: String, range: Range<usize>) -
 
 static mut INSERT_STMT: Option<PreparedStatement> = None;
 
-pub async fn add(session: &Session, email_type: String, emails: Vec<Combo>, params: String) -> QueryResult<()> {
-    session.use_keyspace(email_type, false).await?;
+pub async fn add(session: &Session, email_type: String, emails: Vec<Combo>, params: String) -> Result<(), String> {
+    session.use_keyspace(email_type, false).await
+        .map_err(|err| format!("could not set keyspace see err: {err}"))?;
 
     let mut batch = Batch::default();
 
     if unsafe { INSERT_STMT.is_none() } {
         let stmt = "INSERT INTO main (email, passw, lastcheck, p, id) VALUES (?, ?, 0, ?, ?)";
-        let stmt = session.prepare(stmt).await?;
+        let stmt = session.prepare(stmt).await.map_err(
+            |err| format!("statement error: {err}"))?;
         unsafe { INSERT_STMT = Some(stmt) };
     }
 
@@ -168,7 +170,8 @@ pub async fn add(session: &Session, email_type: String, emails: Vec<Combo>, para
             batch.append_statement(stmt.clone());
         }
     
-        session.batch(&batch, convert_to_tuple(emails, params)).await?;
+        session.batch(&batch, convert_to_tuple(emails, params)).await
+            .map_err(|err| format!("batch error: {err}"))?;
     }
 
     Ok(())

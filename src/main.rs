@@ -1,5 +1,3 @@
-use std::ops::Range;
-
 use actix_web::{web::{Path, Json}, Responder, get, HttpServer, App, post, HttpRequest};
 use config::get_config;
 use scylla::Session;
@@ -44,15 +42,14 @@ async fn greet(name: Path<String>) -> impl Responder {
     format!("Hello {name}!")
 }
 
-#[get("/fetch/{email_type}/{range}")]
-async fn fetch(path: Path<(Option<String>, Option<Range<usize>>)>, req: HttpRequest) -> impl Responder {
+#[get("/fetch/{email_type}")]
+async fn fetch(path: Path<String>, req: HttpRequest) -> impl Responder {
     if auth(&req) == false {
         return "\"not authenticated\"".to_owned();
     }
     let conf = get_config().db.default_batch_size.unwrap();
-    let (email_type, range) = path.into_inner();
-    let email_type = email_type.unwrap_or("email".to_string());
-    let range = range.unwrap_or(0..conf);
+    let email_type = path.into_inner();
+    let range = 0..conf;
     let session = unsafe {
         SESSION.as_ref().expect("uninitialized session")
     };
@@ -62,11 +59,11 @@ async fn fetch(path: Path<(Option<String>, Option<Range<usize>>)>, req: HttpRequ
 }
 
 #[post("/add/{email_type}")]
-async fn add(path: Path<Option<String>>, body: Json<Vec<String>>, req: HttpRequest) -> impl Responder {
+async fn add(path: Path<String>, body: Json<Vec<String>>, req: HttpRequest) -> impl Responder {
     if auth(&req) == false {
         return "\"not authenticated\"".to_owned();
     }
-    let email_type = path.into_inner().unwrap_or("email".to_string());
+    let email_type = path.into_inner();
     let session = unsafe {
         SESSION.as_ref().expect("uninitialized session")
     };
@@ -96,15 +93,18 @@ async fn add(path: Path<Option<String>>, body: Json<Vec<String>>, req: HttpReque
         .unwrap_or_default()
         .to_lowercase();
     let db_resp = db::add(session, email_type, body, params).await;
-    db::to_json(db_resp)
+    match db_resp {
+        Ok(_) => "\"success\"".to_string(),
+        Err(err) => err,
+    }
 }
 
 #[post("/rem/{email_type}")]
-async fn rem(path: Path<Option<String>>, body: Json<Vec<String>>, req: HttpRequest) -> impl Responder {
+async fn rem(path: Path<String>, body: Json<Vec<String>>, req: HttpRequest) -> impl Responder {
     if auth(&req) == false {
         return "\"not authenticated\"".to_owned();
     }
-    let email_type = path.into_inner().unwrap_or("email".to_string());
+    let email_type = path.into_inner();
     let session = unsafe {
         SESSION.as_ref().expect("uninitialized session")
     };
