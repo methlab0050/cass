@@ -27,12 +27,15 @@ async fn main() -> std::io::Result<()> {
 }
 
 fn auth(req: &HttpRequest) -> bool {
-    let get_header = |header_key| req.headers().get(header_key);
+    let headers = req.headers();
+    let get_header = |header_key| headers.get(header_key);
     let Some(auth_header) = get_header("auth")
         .or(get_header("authentication")) 
         else { return false; };
-    let Ok(auth_header) = auth_header.to_str() else { return false; };
-    get_config().auth.api_keys.contains(&auth_header.to_owned())
+    dbg!(auth_header);
+    let auth_header = String::from_utf8_lossy(auth_header.as_bytes()).into_owned();
+    dbg!(&auth_header);
+    get_config().auth.api_keys.contains(&auth_header)
 }
 
 static mut SESSION: Option<Session> = None; 
