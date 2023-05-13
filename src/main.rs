@@ -96,10 +96,7 @@ async fn add(path: Path<String>, body: Json<Vec<String>>, req: HttpRequest) -> i
         .unwrap_or_default()
         .to_lowercase();
     let db_resp = db::add(session, email_type, body, params).await;
-    match db_resp {
-        Ok(_) => "\"success\"".to_string(),
-        Err(err) => err,
-    }
+    db::to_json(db_resp)
 }
 
 #[post("/rem/{email_type}")]
